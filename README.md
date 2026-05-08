@@ -1,4 +1,3 @@
-# Portfolio-Construction
 # Portfolio Construction Model
 
 A Streamlit app that builds a quarterly contribution portfolio for one of three
