@@ -557,8 +557,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Recompute held_returns here in case Kelly section logic was skipped or returned empty
+held_tickers = [t for t in target_weights.index if t in portfolio_prices.columns]
+held_returns = portfolio_prices[held_tickers].pct_change().dropna() if held_tickers else pd.DataFrame()
+
 # Guard: Monte Carlo needs non-empty historical returns
-if held_returns.empty or len(held_returns) < 20:
+if held_returns.empty or len(held_returns) < 20 or len(held_tickers) == 0:
     st.warning(
         "Not enough historical return data to run Monte Carlo. "
         "Try a longer backtest window or verify that price data loaded correctly."
@@ -581,13 +585,13 @@ def monte_carlo_forecast(
     method: str,
 ) -> dict:
     """Forward-only Monte Carlo. Returns array of shape (days, n_paths)."""
-  
-  # Guard against empty input
-       if held_returns.empty or len(held_returns) < 2 or len(weights) == 0:
-           return {
-               "paths": np.zeros((int(horizon_years * 252) + 1, n_paths)),
-               "horizon_years": horizon_years,
-           }
+    # Guard against empty input
+    if held_returns.empty or len(held_returns) < 2 or len(weights) == 0:
+        return {
+            "paths": np.zeros((int(horizon_years * 252) + 1, n_paths)),
+            "horizon_years": horizon_years,
+        }
+
     days = int(horizon_years * 252)
     n_assets = len(weights)
     tickers = list(weights.index)
