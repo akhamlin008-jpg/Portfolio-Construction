@@ -113,27 +113,53 @@ def load_sp500_universe() -> pd.DataFrame:
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def fetch_prices(tickers: tuple[str, ...], start: date, end: date) -> pd.DataFrame:
-    """Download adjusted close prices via yfinance."""
+    """Download adjusted close prices via yfinance, with retry and diagnostics."""
     if not tickers:
         return pd.DataFrame()
-    raw = yf.download(
-        list(tickers),
-        start=start,
-        end=end,
-        auto_adjust=True,
-        progress=False,
-        group_by="ticker",
-        threads=True,
-    )
+
+    try:
+        raw = yf.download(
+            list(tickers),
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+            threads=False,  # threads=True can cause issues on Streamlit Cloud
+        )
+    except Exception as e:
+        st.error(f"yfinance download failed: {e}")
+        return pd.DataFrame()
+
+    if raw is None or raw.empty:
+        st.error(
+            f"yfinance returned no data for {len(tickers)} tickers. "
+            "This is usually a temporary Yahoo Finance rate limit on Streamlit Cloud. "
+            "Try refreshing in a minute, or test locally first."
+        )
+        return pd.DataFrame()
+
+    # Normalize: extract Close prices regardless of column structure
     if isinstance(raw.columns, pd.MultiIndex):
-        closes = pd.DataFrame({
-            t: raw[t]["Close"]
-            for t in tickers
-            if t in raw.columns.levels[0]
-        })
+        # Multi-ticker download — columns are (field, ticker) by default in newer yfinance
+        if "Close" in raw.columns.get_level_values(0):
+            closes = raw["Close"]
+        elif "Close" in raw.columns.get_level_values(1):
+            closes = raw.xs("Close", axis=1, level=1)
+        else:
+            st.error(f"Unexpected yfinance column structure: {raw.columns}")
+            return pd.DataFrame()
     else:
-        closes = pd.DataFrame({tickers[0]: raw["Close"]})
-    closes = closes.dropna(how="all").ffill().dropna()
+        # Single ticker
+        if "Close" in raw.columns:
+            closes = raw[["Close"]].rename(columns={"Close": tickers[0]})
+        else:
+            return pd.DataFrame()
+
+    closes = closes.dropna(how="all").ffill().dropna(how="all")
+    if closes.empty:
+        st.error("Price data downloaded but contained no valid rows after cleaning.")
+        return pd.DataFrame()
+
     return closes
 
 
