@@ -557,6 +557,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Guard: Monte Carlo needs non-empty historical returns
+if held_returns.empty or len(held_returns) < 20:
+    st.warning(
+        "Not enough historical return data to run Monte Carlo. "
+        "Try a longer backtest window or verify that price data loaded correctly."
+    )
+    st.stop()
+
 mc_cols = st.columns(3)
 mc_horizon_years = mc_cols[0].selectbox("Forecast horizon (years)", [1, 3, 5, 10], index=2)
 mc_paths = mc_cols[1].selectbox("# simulations", [500, 1000, 2500, 5000], index=1)
@@ -573,6 +581,13 @@ def monte_carlo_forecast(
     method: str,
 ) -> dict:
     """Forward-only Monte Carlo. Returns array of shape (days, n_paths)."""
+  
+  # Guard against empty input
+       if held_returns.empty or len(held_returns) < 2 or len(weights) == 0:
+           return {
+               "paths": np.zeros((int(horizon_years * 252) + 1, n_paths)),
+               "horizon_years": horizon_years,
+           }
     days = int(horizon_years * 252)
     n_assets = len(weights)
     tickers = list(weights.index)
