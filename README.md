@@ -1,83 +1,126 @@
-# Portfolio Construction Model
+# Portfolio Construction Model — v2
 
-A Streamlit app that builds a quarterly contribution portfolio for one of three
-investor profiles (Conservative / Hybrid / Growth), with a full backtest and
-analysis page.
+A Streamlit app that builds a quarterly contribution portfolio with **defensible methodology**:
+walk-forward backtesting, CAPM expected returns, CRRA-derived bucket weights, block bootstrap
+Monte Carlo, and 60/40 + SPY benchmarks.
+
+## What changed from v1 (and why)
+
+| v1 issue | v2 fix |
+|----------|--------|
+| Mean-historical-return for μ — known to be a noisy estimator | **CAPM expected returns** anchored to SPY as market proxy |
+| Bucket weights hand-picked from intuition | **CRRA utility-derived** bucket weights (Merton solution with no-leverage cap) |
+| Optimizer used full price history (lookahead bias) | **Walk-forward** weight computation — every weight uses only data prior to its date |
+| Buy-and-forget portfolio drifted from target weights | **Quarterly rebalancing** back to target |
+| Only SPY benchmark (a softball) | **60/40 VTI/AGG benchmark** added — the practitioner default |
+| Sortino + Treynor (Treynor meaningless for bond-heavy portfolios) | Treynor dropped; **Calmar ratio** and **Ulcer Index** added |
+| IID bootstrap Monte Carlo destroyed autocorrelation | **Block bootstrap** preserves volatility clustering |
+| GBM Monte Carlo had thin tails | Removed; block bootstrap is statistically better-founded for portfolio sims |
+| No correlation diagnostics | Pairwise correlation heatmap added |
+| No view of what's driving expected returns | CAPM β table shown on builder page |
+| Single price source (yfinance) — fragile on Streamlit Cloud | **Stooq fallback** via pandas-datareader |
+| Dead SP500 universe loader | Removed |
 
 ## File structure
 
 ```
-portfolio_app/
-├── app.py                          ← Page 1: Portfolio Builder
-├── portfolio_core.py               ← Shared logic (constants, loaders, optimizer)
+portfolio_v2/
+├── app.py                          # Page 1: Builder
+├── portfolio_core.py               # Shared methodology
 ├── pages/
-│   └── 2_Backtest_and_Analysis.py  ← Page 2: Backtest, metrics, MC, sensitivity
+│   └── 2_Backtest_and_Analysis.py  # Page 2: Walk-forward backtest
 ├── requirements.txt
 ├── README.md
-├── test_logic.py                   ← Smoke test for builder logic
-└── test_page2_logic.py             ← Smoke test for backtester logic
+└── test_v2_methodology.py          # Smoke tests for the new methodology
 ```
-
-The `pages/` folder is recognized automatically by Streamlit and creates the
-multi-page navigation in the sidebar.
 
 ## Setup
 
 ```bash
-cd portfolio_app
-python -m venv .venv
-source .venv/bin/activate   # on Windows: .venv\Scripts\activate
+cd portfolio_v2
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app will open at `http://localhost:8501`. Switch between **Portfolio Construction Model** and **Backtest and Analysis** in the sidebar.
+## Methodology details
 
-## Page 1 — Builder
+### Bucket weights — CRRA utility (Merton portfolio choice)
 
-- Pulls ticker universes from GitHub (`echuvyrov/TrackingETFs`, `Ate329/top-us-stock-tickers`).
-- Maps risk score (1–10) to bucket weights (Conservative / Hybrid / Growth).
-- Pulls historical prices via yfinance.
-- Runs max-Sharpe optimization within each bucket (PyPortfolioOpt, Ledoit-Wolf shrinkage, 40% single-asset cap).
-- Sizes whole-share allocations to your quarterly cap (`monthly × 3`).
+The risk slider maps to a CRRA risk aversion parameter γ (10 = very conservative, 1 = aggressive).
+The Merton solution allocates each bucket b proportional to:
 
-Outputs persist to `st.session_state` so Page 2 inherits the same risk score, budget, and risk-free rate.
+```
+w_b ∝ excess_return_b / (γ · σ_b²)
+```
 
-## Page 2 — Backtest & Analysis
+With a no-leverage cap (sum ≤ 1). When the cap binds at low γ, an additional growth tilt is
+applied to reflect that risk-tolerant investors prefer higher-vol exposure even at full investment.
 
-Everything below uses the same allocation logic as Page 1, applied historically.
+Bucket priors are static excess-return assumptions (~0.5% conservative, ~1.4% hybrid, ~2.2% growth)
+that anchor the framework. Within each bucket, the optimizer uses **actual realized data** through
+CAPM, so the within-bucket allocation is fully data-driven.
 
-| Section | What it does |
-|---------|--------------|
-| **Backtest** | Simulates quarterly contributions on the first trading day of each quarter, applied identically to your portfolio and a SPY buy-and-hold. Same dollars, same dates — fair comparison. |
-| **Regime breakdown** | Classifies SPY history into Bull / Bear / High-Vol regimes (Bear = 20%+ drawdown; High-Vol = SPY 30-day annualized vol > 25%). Reports your portfolio's annualized return and vol *within each regime*. |
-| **Transaction costs** | Configurable basis-points-per-trade plus optional fixed commission per ticker. Applied to both portfolio and SPY benchmark. |
-| **Risk metrics** | Sharpe, Sortino, Beta vs SPY, Treynor, Alpha (CAPM-implied), CAGR, max drawdown — for both portfolio and SPY side-by-side. |
-| **Kelly criterion** | Multivariate Kelly: f* = Σ⁻¹ · (μ − r_f). Shows full / half / quarter Kelly alongside the optimizer's actual weights so you can see when the optimizer is more conservative than Kelly suggests. |
-| **Sensitivity analysis** | Sweeps risk score, transaction cost, and monthly budget independently. Shows how final portfolio value moves with each input. |
-| **Monte Carlo forecast** | Forward-looking 1–10 year simulation. Two methods: **Bootstrap** (resamples actual historical returns; preserves fat tails) and **GBM** (parametric lognormal). Reports median / 5th / 95th percentile outcomes and probability of underperforming total contributions. |
+### Within-bucket optimization — Max-Sharpe with CAPM μ
 
-## Risk-free rate
+Within each bucket, weights are determined by max-Sharpe optimization (PyPortfolioOpt):
+- Expected returns from CAPM: μ_i = r_f + β_i · (E[R_m] - r_f)
+- Covariance: Ledoit-Wolf shrinkage estimator
+- Constraint: no asset > 40% of bucket
+- Optional: Kelly-derived per-asset upper bounds
 
-Editable from either page. Flows through:
-- Sharpe ratio calculation
-- Treynor ratio
-- Alpha (CAPM)
-- Kelly criterion (excess return component)
-- Optimizer's max-Sharpe target
+### Backtest — walk-forward, no lookahead
 
-## Caveats
+At each quarterly rebalance date:
+1. Window = the prior N days (configurable, default 756 = ~3 years)
+2. Compute weights using **only this window**
+3. Apply weights forward to the next rebalance date
+4. Trade to target with transaction costs
 
-- This is a demonstration model. Not investment advice.
-- Mean-historical-return is a known weak estimator of expected returns. For production, swap in `expected_returns.capm_return()` or Black-Litterman with custom views.
-- Monte Carlo assumes the future return distribution resembles the lookback window. It does not predict regime shifts or structural breaks not present in history.
-- Whole-share allocation only — leftover cash sits idle (reported transparently).
-- Kelly is shown for reference. Full Kelly is famously aggressive; fractional Kelly (½ or ¼) is what most practitioners actually use.
-- The S&P 500 list is loaded but not currently used in allocation. To extend to single-name equities, add a fourth bucket and wire `load_sp500_universe()` into the bucket map.
+This is the single most important fix. v1 optimized on the full history and "backtested" on the same
+data — that's curve-fitting. v2's weights only use information that would have been available at
+each historical point.
 
-## Streamlit Cloud deployment
+### Monte Carlo — block bootstrap
 
-If deploying to Streamlit Cloud:
-1. `requirements.txt` must be at the **root** of your repo (same level as `app.py`).
-2. Set the main file path in Streamlit Cloud settings to `app.py` (case-sensitive).
-3. The `pages/` folder must be at the root too — Streamlit auto-discovers it.
+Resamples **contiguous blocks** of historical returns (default 10 days) rather than individual days.
+This preserves:
+- Volatility clustering (high-vol days tend to follow high-vol days)
+- Autocorrelation
+- Empirical distribution shape (no Gaussian assumption)
+
+IID bootstrap (v1) destroys these features and systematically understates tail risk.
+
+### Risk metrics
+
+- **Sharpe** — return per unit of total volatility (standard)
+- **Sortino** — return per unit of downside volatility (penalizes only bad vol)
+- **Beta vs SPY** — market sensitivity (kept as a sanity check, less meaningful for bond-heavy portfolios)
+- **Alpha** — CAPM-implied excess return
+- **Max Drawdown** — worst peak-to-trough decline
+- **Calmar Ratio** — CAGR / |Max DD| — how much return per unit of drawdown
+- **Ulcer Index** — RMS of drawdown series — penalizes sustained underwater periods
+
+Treynor ratio is intentionally dropped: it assumes systematic risk dominates, which fails for bonds.
+
+### Data sources
+
+Two-tier fallback for price data:
+1. **yfinance** (primary)
+2. **Stooq** via pandas-datareader (fallback when yfinance fails or returns sparse data)
+
+This eliminates the single-point-of-failure problem v1 had on Streamlit Cloud.
+
+## Known limitations (still imperfect)
+
+1. **Survivorship bias.** The universe is current-listed ETFs. Pre-inception backtests aren't
+   possible for newer ETFs (HYG: 2007, QQQ: 1999, VUG: 2004).
+2. **Single-factor model.** CAPM uses SPY as the market. Multi-factor (Fama-French / Carhart)
+   attribution would be more rigorous but adds dependencies on Ken French's data library.
+3. **Static bucket priors.** The excess-return assumptions don't adapt to changing yield curves
+   beyond what flows through the risk-free rate input.
+4. **No tax considerations.** Asset location (bonds in IRA, growth in Roth, broad index in taxable)
+   matters in reality and isn't modeled.
+5. **Whole-share rounding** creates small cash drag (reported transparently in the UI).
+
+These are documented in the app itself in methodology-note blocks so users (and reviewers)
+see them in context.
