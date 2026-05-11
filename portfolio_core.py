@@ -24,12 +24,6 @@ try:
 except ImportError:
     yf = None
 
-try:
-    from pandas_datareader import data as pdr
-    HAS_PDR = True
-except ImportError:
-    HAS_PDR = False
-
 ETF_UNIVERSE_URL = "https://raw.githubusercontent.com/echuvyrov/TrackingETFs/master/etfs.csv"
 
 CONSERVATIVE_TICKERS = ["SHY", "AGG", "BND", "TIP", "LQD", "CSJ", "MBB"]
@@ -148,30 +142,43 @@ def _try_yfinance(tickers: list[str], start: date, end: date) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _try_stooq(tickers: list[str], start: date, end: date) -> pd.DataFrame:
-    if not HAS_PDR:
-        return pd.DataFrame()
+def _fetch_stooq_single(ticker: str, start: date, end: date) -> pd.DataFrame | None:
+    """
+    Fetch a single ticker's history from Stooq's public CSV endpoint.
+    URL format: https://stooq.com/q/d/l/?s=spy.us&i=d&d1=20200101&d2=20240101
+    """
     try:
-        stooq_tickers = [f"{t}.US" for t in tickers]
-        raw = pdr.DataReader(stooq_tickers, "stooq", start, end)
-        if raw is None or raw.empty:
-            return pd.DataFrame()
-        raw = raw.sort_index()
-        if isinstance(raw.columns, pd.MultiIndex):
-            if "Close" in raw.columns.get_level_values(0):
-                closes = raw["Close"]
-            else:
-                return pd.DataFrame()
-            closes.columns = [c.replace(".US", "") for c in closes.columns]
-        else:
-            if "Close" in raw.columns:
-                closes = raw[["Close"]]
-                closes.columns = [tickers[0]]
-            else:
-                return pd.DataFrame()
-        return closes.dropna(how="all").ffill().dropna(how="all")
+        url = (
+            f"https://stooq.com/q/d/l/?s={ticker.lower()}.us"
+            f"&i=d&d1={start.strftime('%Y%m%d')}&d2={end.strftime('%Y%m%d')}"
+        )
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200 or "No data" in resp.text or len(resp.text) < 50:
+            return None
+        df = pd.read_csv(io.StringIO(resp.text))
+        if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+            return None
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.set_index("Date").sort_index()
+        return df[["Close"]].rename(columns={"Close": ticker})
     except Exception:
+        return None
+
+
+def _try_stooq(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """
+    Fetch multiple tickers from Stooq by hitting one CSV per ticker.
+    Returns a wide DataFrame with one Close column per ticker.
+    """
+    frames = []
+    for ticker in tickers:
+        df = _fetch_stooq_single(ticker, start, end)
+        if df is not None:
+            frames.append(df)
+    if not frames:
         return pd.DataFrame()
+    combined = pd.concat(frames, axis=1, join="outer")
+    return combined.ffill().dropna(how="all")
 
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
