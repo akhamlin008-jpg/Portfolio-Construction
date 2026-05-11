@@ -1,7 +1,9 @@
 streamlit>=1.32
 yfinance
+pandas-datareader>=0.10.0
 pandas>=2.0
 numpy>=1.24
 requests>=2.31
 PyPortfolioOpt>=1.5.5
 scipy>=1.10
+matplotlib>=3.7
